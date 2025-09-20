@@ -2,8 +2,10 @@ const puppeteer = require("puppeteer");
 
 (async () => {
   const TARGET_URL = process.argv[2];
+  const MEASUREMENT_ID = process.argv[3] || "G-1CQCE0SD00"; // Measurement ID
+
   if (!TARGET_URL) {
-    console.error("❌ Vui lòng chạy: node event-checker.js <URL>");
+    console.error("❌ Vui lòng chạy: node event-checker.js <URL> <GA4_MEASUREMENT_ID>");
     process.exit(1);
   }
 
@@ -20,6 +22,7 @@ const puppeteer = require("puppeteer");
   );
 
   console.log(`🔍 Đang quét: ${TARGET_URL}`);
+  console.log(`📐 Measurement ID: ${MEASUREMENT_ID}`);
   await page.goto(TARGET_URL, { waitUntil: "networkidle2" });
 
   // ===== Quét element =====
@@ -65,15 +68,47 @@ const puppeteer = require("puppeteer");
   let checklist = [];
   const customJsList = [];
 
-  // FORM
+  // FORM START + SUBMIT
   forms.forEach(f => {
+    checklist.push({
+      Tag: "GA4 – Form Start",
+      Event: "form_start",
+      Trigger: "Custom Event: form_start",
+      Variables: "form_id, form_action, form_method",
+      Measurement_ID: MEASUREMENT_ID,
+      Selector: f.id ? `#${f.id}` : f.action || "form",
+      "Custom JS": "Có"
+    });
+
     checklist.push({
       Tag: "GA4 – Form Submit",
       Event: "form_submit",
       Trigger: "Custom Event: form_submit",
       Variables: "form_id, form_action, form_method",
+      Measurement_ID: MEASUREMENT_ID,
       Selector: f.id ? `#${f.id}` : f.action || "form",
       "Custom JS": "Không"
+    });
+
+    customJsList.push({
+      title: "Form Start",
+      code: `
+<script>
+document.querySelectorAll("form").forEach(form => {
+  let started = false;
+  form.addEventListener("input", () => {
+    if (!started) {
+      started = true;
+      dataLayer.push({
+        event: "form_start",
+        form_id: form.id || null,
+        form_action: form.action || null,
+        form_method: form.method || null
+      });
+    }
+  });
+});
+</script>`
     });
   });
 
@@ -84,6 +119,7 @@ const puppeteer = require("puppeteer");
       Event: "button_click",
       Trigger: "Custom Event: button_click",
       Variables: "button_id, button_text, button_class",
+      Measurement_ID: MEASUREMENT_ID,
       Selector: b.id ? `#${b.id}` : b.text || "button",
       "Custom JS": "Không"
     });
@@ -96,6 +132,7 @@ const puppeteer = require("puppeteer");
       Event: "video_event",
       Trigger: "Custom Event: video_event",
       Variables: "video_action, video_progress, video_url, video_duration",
+      Measurement_ID: MEASUREMENT_ID,
       Selector: "Tất cả <video>",
       "Custom JS": "Có"
     });
@@ -161,6 +198,7 @@ document.querySelectorAll("video").forEach(v => {
       Event: "section_dwell",
       Trigger: "Custom Event: section_dwell",
       Variables: "section_id, section_class, dwell_time",
+      Measurement_ID: MEASUREMENT_ID,
       Selector: "Tất cả section/div/article có ID/class",
       "Custom JS": "Có"
     });
@@ -204,6 +242,7 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
     Event: "reload_event",
     Trigger: "Custom Event: reload_event",
     Variables: "reload_count, time_since_last",
+    Measurement_ID: MEASUREMENT_ID,
     Selector: "N/A",
     "Custom JS": "Có"
   });
@@ -246,6 +285,7 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
       Event: "slide_event",
       Trigger: "Custom Event: slide_event",
       Variables: "slide_index, slide_id, slide_class",
+      Measurement_ID: MEASUREMENT_ID,
       Selector: ".swiper hoặc carousel",
       "Custom JS": "Có"
     });
@@ -287,6 +327,7 @@ if (window.Swiper) {
       Event: g.Event,
       Trigger: g.Trigger,
       Variables: g.Variables,
+      Measurement_ID: g.Measurement_ID,
       Selectors: g.Selectors.join(" | "),
       "Custom JS": g["Custom JS"]
     }));
