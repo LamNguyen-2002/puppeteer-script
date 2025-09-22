@@ -1,13 +1,19 @@
+const fs = require("fs");
 const puppeteer = require("puppeteer");
 
 (async () => {
   const TARGET_URL = process.argv[2];
-  const MEASUREMENT_ID = process.argv[3] || "G-1CQCE0SD00"; // Measurement ID
+  const MEASUREMENT_ID = process.argv[3] || "G-XXXXXXX";
+  const MODE = process.argv.includes("--audit") ? "audit" : "setup";
 
   if (!TARGET_URL) {
-    console.error("❌ Vui lòng chạy: node event-checker.js <URL> <GA4_MEASUREMENT_ID>");
+    console.error("❌ Vui lòng chạy: node event-checker.js <URL> <GA4_MEASUREMENT_ID> --setup|--audit");
     process.exit(1);
   }
+
+  console.log(`🔍 Đang quét: ${TARGET_URL}`);
+  console.log(`📐 Measurement ID: ${MEASUREMENT_ID}`);
+  console.log(`⚙️ Mode: ${MODE}`);
 
   const browser = await puppeteer.launch({
     headless: true,
@@ -20,79 +26,38 @@ const puppeteer = require("puppeteer");
       "AppleWebKit/537.36 (KHTML, like Gecko) " +
       "Chrome/120.0.0.0 Safari/537.36"
   );
-
-  console.log(`🔍 Đang quét: ${TARGET_URL}`);
-  console.log(`📐 Measurement ID: ${MEASUREMENT_ID}`);
   await page.goto(TARGET_URL, { waitUntil: "networkidle2" });
 
-  // ===== Quét element =====
-  const forms = await page.$$eval("form", els =>
-    els.map(el => ({ id: el.id || null, action: el.action || null }))
-  );
-
-  const buttons = await page.$$eval("button", els =>
-    els.map(el => ({
-      id: el.id || null,
-      text: (el.innerText || el.textContent || "").trim().slice(0, 120)
-    }))
-  );
-
-  const videos = await page.$$eval("video", els =>
-    els.map(el => ({
-      id: el.id || null,
-      src: el.currentSrc || el.src || null
-    }))
-  );
-
-  const sections = await page.$$eval("section, div[id], article", els =>
-    els.map(el => ({
-      id: el.id || null,
-      className: el.className || null
-    }))
-  );
-
-  const sliders = await page.$$eval("div, section", els =>
-    els
-      .filter(
-        el =>
-          /slider|carousel/i.test(el.className) ||
-          el.getAttribute("role") === "slider"
-      )
-      .map(el => ({
-        id: el.id || null,
-        className: el.className || null
-      }))
-  );
-
-  // ===== Checklist GTM =====
-  let checklist = [];
-  const customJsList = [];
-
-  // FORM START + SUBMIT
-  forms.forEach(f => {
-    checklist.push({
-      Tag: "GA4 – Form Start",
-      Event: "form_start",
-      Trigger: "Custom Event: form_start",
-      Variables: "form_id, form_action, form_method",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: f.id ? `#${f.id}` : f.action || "form",
-      "Custom JS": "Có"
+  // =========================================================
+  // =============== HÀM TIỆN ÍCH ============================
+  // =========================================================
+  function uniqueChecklist(checklist) {
+    const seen = new Set();
+    return checklist.filter(item => {
+      const key = item.Event + "|" + item.Selector;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
+  }
 
-    checklist.push({
-      Tag: "GA4 – Form Submit",
-      Event: "form_submit",
-      Trigger: "Custom Event: form_submit",
-      Variables: "form_id, form_action, form_method",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: f.id ? `#${f.id}` : f.action || "form",
-      "Custom JS": "Không"
+  function groupByEvent(checklist) {
+    const grouped = {};
+    checklist.forEach(item => {
+      if (!grouped[item.Event]) grouped[item.Event] = [];
+      grouped[item.Event].push(item.Selector);
     });
+    return Object.entries(grouped).map(([event, selectors]) => ({
+      Event: event,
+      Selector: selectors.join(" | ")
+    }));
+  }
 
-    customJsList.push({
-      title: "Form Start",
-      code: `
+  // =========================================================
+  // =============== CUSTOM SNIPPETS =========================
+  // =========================================================
+  const snippets = {
+    form: `
 <script>
 document.querySelectorAll("form").forEach(form => {
   let started = false;
@@ -107,38 +72,32 @@ document.querySelectorAll("form").forEach(form => {
       });
     }
   });
+  form.addEventListener("submit", () => {
+    dataLayer.push({
+      event: "form_submit",
+      form_id: form.id || null,
+      form_action: form.action || null,
+      form_method: form.method || null
+    });
+  });
 });
-</script>`
+</script>
+    `,
+    button: `
+<script>
+document.querySelectorAll("button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    dataLayer.push({
+      event: "button_click",
+      button_id: btn.id || null,
+      button_text: (btn.innerText || btn.textContent || "").trim(),
+      button_class: btn.className || null
     });
   });
-
-  // BUTTON
-  buttons.forEach(b => {
-    checklist.push({
-      Tag: "GA4 – Button Click",
-      Event: "button_click",
-      Trigger: "Custom Event: button_click",
-      Variables: "button_id, button_text, button_class",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: b.id ? `#${b.id}` : b.text || "button",
-      "Custom JS": "Không"
-    });
-  });
-
-  // VIDEO
-  if (videos.length > 0) {
-    checklist.push({
-      Tag: "GA4 – Video Tracking",
-      Event: "video_event",
-      Trigger: "Custom Event: video_event",
-      Variables: "video_action, video_progress, video_url, video_duration",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: "Tất cả <video>",
-      "Custom JS": "Có"
-    });
-    customJsList.push({
-      title: "Video Tracking",
-      code: `
+});
+</script>
+    `,
+    video: `
 <script>
 document.querySelectorAll("video").forEach(v => {
   let started = false;
@@ -187,36 +146,20 @@ document.querySelectorAll("video").forEach(v => {
     }
   });
 });
-</script>`
-    });
-  }
-
-  // SECTION
-  if (sections.length > 0) {
-    checklist.push({
-      Tag: "GA4 – Section Dwell Time",
-      Event: "section_dwell",
-      Trigger: "Custom Event: section_dwell",
-      Variables: "section_id, section_class, dwell_time",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: "Tất cả section/div/article có ID/class",
-      "Custom JS": "Có"
-    });
-    customJsList.push({
-      title: "Section Dwell Time",
-      code: `
+</script>
+    `,
+    section: `
 <script>
 document.querySelectorAll("section, div[id], article").forEach(sec => {
   let visible = false;
-  let entered = false;
   let enterTime = null;
 
   const observer = new IntersectionObserver(entries => {
     entries.forEach(entry => {
-      if (entry.isIntersecting && !visible && !entered) {
+      if (entry.isIntersecting && !visible) {
         visible = true;
         enterTime = Date.now();
-      } else if (!entry.isIntersecting && visible && !entered) {
+      } else if (!entry.isIntersecting && visible) {
         visible = false;
         const dwell = Math.round((Date.now() - enterTime) / 1000);
         dataLayer.push({
@@ -225,30 +168,15 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
           section_class: sec.className || null,
           dwell_time: dwell
         });
-        entered = true;
       }
     });
   }, { threshold: 0.5 });
 
   observer.observe(sec);
 });
-</script>`
-    });
-  }
-
-  // RELOAD
-  checklist.push({
-    Tag: "GA4 – Reload Tracking",
-    Event: "reload_event",
-    Trigger: "Custom Event: reload_event",
-    Variables: "reload_count, time_since_last",
-    Measurement_ID: MEASUREMENT_ID,
-    Selector: "N/A",
-    "Custom JS": "Có"
-  });
-  customJsList.push({
-    title: "Reload Tracking",
-    code: `
+</script>
+    `,
+    reload: `
 <script>
 (function() {
   const now = Date.now();
@@ -275,23 +203,9 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
   sessionStorage.setItem("reload_count", count);
   sessionStorage.setItem("last_load_time", now);
 })();
-</script>`
-  });
-
-  // SLIDER
-  if (sliders.length > 0) {
-    checklist.push({
-      Tag: "GA4 – Slide Change",
-      Event: "slide_event",
-      Trigger: "Custom Event: slide_event",
-      Variables: "slide_index, slide_id, slide_class",
-      Measurement_ID: MEASUREMENT_ID,
-      Selector: ".swiper hoặc carousel",
-      "Custom JS": "Có"
-    });
-    customJsList.push({
-      title: "Slide/Carousel Tracking",
-      code: `
+</script>
+    `,
+    slide: `
 <script>
 if (window.Swiper) {
   document.querySelectorAll('.swiper').forEach((slider) => {
@@ -308,43 +222,115 @@ if (window.Swiper) {
     }
   });
 }
-</script>`
+</script>
+    `
+  };
+
+  // =========================================================
+  // =============== SETUP MODE ==============================
+  // =========================================================
+  if (MODE === "setup") {
+    const forms = await page.$$eval("form", els =>
+      els.map(el => ({ id: el.id || null, action: el.action || null }))
+    );
+    const buttons = await page.$$eval("button", els =>
+      els.map(el => ({
+        id: el.id || null,
+        text: (el.innerText || el.textContent || "").trim().slice(0, 120)
+      }))
+    );
+    const videos = await page.$$eval("video", els =>
+      els.map(el => ({ id: el.id || null, src: el.currentSrc || el.src || null }))
+    );
+    const sections = await page.$$eval("section, div[id], article", els =>
+      els.map(el => ({ id: el.id || null, className: el.className || null }))
+    );
+
+    // Tạo checklist cơ bản
+    let checklist = [];
+    forms.forEach(f => {
+      checklist.push({ Event: "form_start", Selector: f.id ? `#${f.id}` : "form" });
+      checklist.push({ Event: "form_submit", Selector: f.id ? `#${f.id}` : "form" });
     });
+    buttons.forEach(b => {
+      const selector = b.id ? `#${b.id}` : (b.text || "button");
+      checklist.push({ Event: "button_click", Selector: selector });
+    });
+    if (videos.length > 0) checklist.push({ Event: "video_event", Selector: "<video>" });
+    if (sections.length > 0) checklist.push({ Event: "section_dwell", Selector: "section/div/article" });
+    checklist.push({ Event: "reload_event", Selector: "N/A" });
+
+    // Xử lý trùng & gom nhóm
+    checklist = uniqueChecklist(checklist);
+    checklist = groupByEvent(checklist);
+
+    console.log("\n📊 Checklist (gọn):");
+    console.table(checklist);
+
+    // Xuất file GTM container JSON (giả lập)
+    fs.writeFileSync("gtm-container.json", JSON.stringify({ measurement_id: MEASUREMENT_ID, events: checklist }, null, 2));
+    console.log("💾 Đã tạo file gtm-container.json");
+
+    // Xuất file custom JS snippets (đầy đủ)
+    fs.writeFileSync(
+      "custom-js-snippets.txt",
+      [snippets.form, snippets.button, snippets.video, snippets.section, snippets.reload, snippets.slide].join("\n\n")
+    );
+    console.log("💾 Đã tạo file custom-js-snippets.txt (đầy đủ)");
   }
 
-  // ===== GỘP TRÙNG =====
-  function groupByTagEventTrigger(data) {
-    const grouped = {};
-    data.forEach(item => {
-      const key = item.Tag + "|" + item.Event + "|" + item.Trigger;
-      if (!grouped[key]) {
-        grouped[key] = { ...item, Selectors: [] };
-      }
-      grouped[key].Selectors.push(item.Selector);
+  // =========================================================
+  // =============== AUDIT MODE ==============================
+  // =========================================================
+  if (MODE === "audit") {
+    // Hook dataLayer
+    await page.exposeFunction("logEvent", e => {
+      console.log("📩 DataLayer Event:", e);
     });
-    return Object.values(grouped).map(g => ({
-      Tag: g.Tag,
-      Event: g.Event,
-      Trigger: g.Trigger,
-      Variables: g.Variables,
-      Measurement_ID: g.Measurement_ID,
-      Selectors: g.Selectors.join(" | "),
-      "Custom JS": g["Custom JS"]
-    }));
-  }
-
-  checklist = groupByTagEventTrigger(checklist);
-
-  // ===== In bảng ra console =====
-  console.log("\n📊 Checklist setup GTM (đã gộp):");
-  console.table(checklist);
-
-  if (customJsList.length > 0) {
-    console.log("\n💻 Custom JS cần thêm vào site:");
-    customJsList.forEach(js => {
-      console.log(`\n▶ ${js.title}`);
-      console.log(js.code);
+    await page.evaluate(() => {
+      window.dataLayer = window.dataLayer || [];
+      const orig = window.dataLayer.push;
+      window.dataLayer.push = function() {
+        window.logEvent(arguments[0]);
+        return orig.apply(window.dataLayer, arguments);
+      };
     });
+
+    // Giả lập hành vi test
+    console.log("\n🧪 Đang test hành vi...");
+
+    const btn = await page.$("button");
+    if (btn) {
+      await btn.click();
+      console.log("✅ Click button test");
+    } else {
+      console.log("⚠️ Không tìm thấy button để test");
+    }
+
+    const form = await page.$("form input");
+    if (form) {
+      await form.type("test");
+      await page.keyboard.press("Enter").catch(() => {});
+      console.log("✅ Form test");
+    } else {
+      console.log("⚠️ Không tìm thấy form để test");
+    }
+
+    const video = await page.$("video");
+    if (video) {
+      await page.evaluate(() => {
+        const v = document.querySelector("video");
+        if (v) v.play();
+      });
+      console.log("✅ Video play test");
+    } else {
+      console.log("⚠️ Không tìm thấy video để test");
+    }
+
+    await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+    console.log("✅ Scroll test");
+
+    console.log("\n👉 Kiểm tra log ở trên để thấy event nào bắn ra (📩 DataLayer Event).");
   }
 
   await browser.close();
