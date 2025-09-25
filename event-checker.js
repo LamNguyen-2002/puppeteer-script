@@ -23,10 +23,14 @@ const puppeteer = require("puppeteer");
   const page = await browser.newPage();
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-      "AppleWebKit/537.36 (KHTML, like Gecko) " +
-      "Chrome/120.0.0.0 Safari/537.36"
+    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/120.0.0.0 Safari/537.36"
   );
+
   await page.goto(TARGET_URL, { waitUntil: "networkidle2" });
+
+  // Chờ Nuxt mount
+  await page.waitForFunction(() => !!window.$nuxt || !!window.__NUXT__, { timeout: 60000 });
 
   // =========================================================
   // =============== HÀM TIỆN ÍCH ============================
@@ -187,14 +191,14 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
     const diff = Math.round((now - parseInt(lastLoad)) / 1000);
     count = parseInt(count) + 1;
     dataLayer.push({
-      event: "reload_event",
+      event: "reload_or_route_event",
       reload_count: count,
       time_since_last: diff
     });
   } else {
     count = 1;
     dataLayer.push({
-      event: "reload_event",
+      event: "reload_or_route_event",
       reload_count: count,
       time_since_last: null
     });
@@ -202,6 +206,17 @@ document.querySelectorAll("section, div[id], article").forEach(sec => {
 
   sessionStorage.setItem("reload_count", count);
   sessionStorage.setItem("last_load_time", now);
+
+  // Theo dõi route change Nuxt SPA
+  if (window.$nuxt && window.$nuxt.$router) {
+    window.$nuxt.$router.afterEach((to, from) => {
+      dataLayer.push({
+        event: "nuxt_route_change",
+        path: to.fullPath,
+        from: from.fullPath
+      });
+    });
+  }
 })();
 </script>
     `,
@@ -246,7 +261,7 @@ if (window.Swiper) {
       els.map(el => ({ id: el.id || null, className: el.className || null }))
     );
 
-    // Tạo checklist cơ bản
+    // Tạo checklist
     let checklist = [];
     forms.forEach(f => {
       checklist.push({ Event: "form_start", Selector: f.id ? `#${f.id}` : "form" });
@@ -258,20 +273,18 @@ if (window.Swiper) {
     });
     if (videos.length > 0) checklist.push({ Event: "video_event", Selector: "<video>" });
     if (sections.length > 0) checklist.push({ Event: "section_dwell", Selector: "section/div/article" });
-    checklist.push({ Event: "reload_event", Selector: "N/A" });
+    checklist.push({ Event: "reload_or_route_event", Selector: "N/A" });
+    checklist.push({ Event: "nuxt_route_change", Selector: "router" });
 
-    // Xử lý trùng & gom nhóm
     checklist = uniqueChecklist(checklist);
     checklist = groupByEvent(checklist);
 
     console.log("\n📊 Checklist (gọn):");
     console.table(checklist);
 
-    // Xuất file GTM container JSON (giả lập)
     fs.writeFileSync("gtm-container.json", JSON.stringify({ measurement_id: MEASUREMENT_ID, events: checklist }, null, 2));
     console.log("💾 Đã tạo file gtm-container.json");
 
-    // Xuất file custom JS snippets (đầy đủ)
     fs.writeFileSync(
       "custom-js-snippets.txt",
       [snippets.form, snippets.button, snippets.video, snippets.section, snippets.reload, snippets.slide].join("\n\n")
@@ -283,37 +296,31 @@ if (window.Swiper) {
   // =============== AUDIT MODE ==============================
   // =========================================================
   if (MODE === "audit") {
-    // Hook dataLayer
     await page.exposeFunction("logEvent", e => {
       console.log("📩 DataLayer Event:", e);
     });
     await page.evaluate(() => {
       window.dataLayer = window.dataLayer || [];
       const orig = window.dataLayer.push;
-      window.dataLayer.push = function() {
+      window.dataLayer.push = function () {
         window.logEvent(arguments[0]);
         return orig.apply(window.dataLayer, arguments);
       };
     });
 
-    // Giả lập hành vi test
     console.log("\n🧪 Đang test hành vi...");
 
     const btn = await page.$("button");
     if (btn) {
       await btn.click();
       console.log("✅ Click button test");
-    } else {
-      console.log("⚠️ Không tìm thấy button để test");
     }
 
     const form = await page.$("form input");
     if (form) {
       await form.type("test");
-      await page.keyboard.press("Enter").catch(() => {});
+      await page.keyboard.press("Enter").catch(() => { });
       console.log("✅ Form test");
-    } else {
-      console.log("⚠️ Không tìm thấy form để test");
     }
 
     const video = await page.$("video");
@@ -323,12 +330,18 @@ if (window.Swiper) {
         if (v) v.play();
       });
       console.log("✅ Video play test");
-    } else {
-      console.log("⚠️ Không tìm thấy video để test");
     }
 
     await page.evaluate(() => window.scrollBy(0, window.innerHeight));
     console.log("✅ Scroll test");
+
+    // Test route change Nuxt
+    await page.evaluate(() => {
+      if (window.$nuxt && window.$nuxt.$router) {
+        window.$nuxt.$router.push("/test-route");
+      }
+    });
+    console.log("✅ Route change test");
 
     console.log("\n👉 Kiểm tra log ở trên để thấy event nào bắn ra (📩 DataLayer Event).");
   }
